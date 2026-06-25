@@ -1,0 +1,99 @@
+# =============================================================================
+# rank-harvester 配置
+#
+# 开箱即用：无需任何配置即可启动（dry-run 演示模式 + 自动生成演示账号）。
+# 下方 rankharvester 段仅在「接真实环境」时才需要取消注释并填写。
+#
+# 数据库说明（你不需要提供任何数据库连接信息）：
+#   · 明细存储 = 嵌入式 DuckDB，零连接配置：无 host / 账号 / 密码 / URL，
+#                数据文件默认落在 data/rank.duckdb（可用 RANKHARVESTER_DUCKDB_PATH 覆盖）。
+#   · Redis    = 队列 / IPC / 缓存，默认 localhost:6379；Docker 内由 compose 用服务名注入，
+#                通常无需手填。
+#
+# 其余调优参数（scheduler / fetch / 各类超时）均已在代码中带默认值，
+# 需要微调时再按 README 显式添加，平时无需出现在此文件。
+# =============================================================================
+
+spring:
+  data:
+    redis:
+      host: ${SPRING_DATA_REDIS_HOST:localhost}
+      port: ${SPRING_DATA_REDIS_PORT:6379}
+      password: ${SPRING_DATA_REDIS_PASSWORD:}   # 鉴权口令由部署机 .env 注入（需与 Redis --requirepass 一致），不入库
+      database: 2                       # 使用 DB2
+  web:
+    resources:
+      cache:
+        cachecontrol:
+          no-store: true                # 静态页/JS 不缓存：Cloudflare 等 CDN 也会尊重 no-store 不缓存，改了即时生效
+  # 邮件：分区排行榜订阅·排名变动通知（密码用 env 注入，不入库到 git）
+  mail:
+    host: ${RANKHARVESTER_MAIL_HOST:smtp.example.com}
+    port: ${RANKHARVESTER_MAIL_PORT:465}
+    username: ${RANKHARVESTER_MAIL_USERNAME:noreply@example.com}
+    password: ${RANKHARVESTER_MAIL_PASSWORD:}
+    protocol: smtps
+    default-encoding: UTF-8
+    properties:
+      mail:
+        mime:
+          charset: UTF-8
+        smtps:
+          auth: true
+          ssl:
+            enable: true
+          # 超时保护：SMTP 不可达/慢时快速失败，不阻塞调用线程（留言审核线程曾被无超时发信卡死）
+          connectiontimeout: 10000
+          timeout: 15000
+          writetimeout: 15000
+
+server:
+  port: 8080
+
+# 留言板 AI：发布即审核（moderation）+ 每小时刷屏治理（housekeeping），共用同一 OpenAI 兼容网关。
+rankharvester:
+  # 人机验证：Turnstile 与极验 GeeTest 并列，前端默认极验(对中国用户友好)可切 Turnstile，任一通过即放行。
+  # Cloudflare Turnstile：siteKey 公开下发前端，secret 仅服务端校验用
+  turnstile:
+    enabled: ${RANKHARVESTER_TURNSTILE_ENABLED:true}
+    site-key: ${RANKHARVESTER_TURNSTILE_SITEKEY:}
+    secret-key: ${RANKHARVESTER_TURNSTILE_SECRETKEY:}   # 机密由部署机 .env 注入，不入库
+  # 极验 GeeTest v4：captcha-id 公开下发前端(类比 siteKey)，captcha-key 是机密，仅服务端算 sign_token 用
+  geetest:
+    enabled: ${RANKHARVESTER_GEETEST_ENABLED:true}
+    captcha-id: ${RANKHARVESTER_GEETEST_CAPTCHAID:}
+    captcha-key: ${RANKHARVESTER_GEETEST_CAPTCHAKEY:}   # 机密由部署机 .env 注入，不入库
+  # 全站 AI 统一走同一 Gemini（OpenAI 兼容）网关。私人项目：网关/密钥/模型直接内置为默认，env 可覆盖。
+  ai:
+    baseurl: ${RANKHARVESTER_AI_BASEURL:https://YOUR_AI_GATEWAY/v1}
+    apikey: ${RANKHARVESTER_AI_APIKEY:}
+    model: ${RANKHARVESTER_AI_MODEL:gemini-3-pro}             # 隐藏榜预测：强模型
+  moderation:
+    base-url: ${RANKHARVESTER_MODERATION_BASEURL:https://YOUR_AI_GATEWAY/v1}
+    api-key: ${RANKHARVESTER_MODERATION_APIKEY:}
+    model: ${RANKHARVESTER_MODERATION_MODEL:gemini-3.5-flash}  # 即时审核：轻量模型，快
+  msg-housekeeping:
+    model: ${RANKHARVESTER_MSGHOUSEKEEPING_MODEL:gemini-3-pro} # 刷屏合并：判断更准的大模型
+    enabled: ${RANKHARVESTER_MSGHOUSEKEEPING_ENABLED:true}
+
+# Actuator 健康探针（容器 HEALTHCHECK / compose 探活用）；/actuator/health 默认即对外暴露。
+management:
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  health:
+    mail:
+      enabled: false                    # 关闭邮件健康检查，避免 SMTP 不可达阻塞启动
+
+# ===== 接真实环境才需要填：取消注释并填写。不填则保持 dry-run 演示，可正常启动。 =====
+# rankharvester:
+#   accounts:
+#     # StrikeGod pg_dump 导出的 game_account.sql；首次启动且表为空时自动导入 DuckDB。
+#     # 含明文密码/pauth，属敏感文件，仅按本机绝对路径读取，勿入库 git。
+#     seed-sql: /absolute/path/to/public.game_account.sql
+#   game:
+#     dry-run: false                        # 关闭模拟，连真实游戏服
+#     servers:                              # 大区名 -> host:port
+#       s1: "game-s1.example.com:8001"
+#       s2: "game-s2.example.com:8001"

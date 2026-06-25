@@ -1,0 +1,21 @@
+# systemd 单元：放到 /etc/systemd/system/rank-harvester.service
+# 安装： sudo cp deploy/rank-harvester.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now rank-harvester
+[Unit]
+Description=rank-harvester (Spring Boot 4 / Java 25)
+After=network-online.target redis-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=www
+WorkingDirectory=/www/wwwroot/rank-harvester
+EnvironmentFile=/www/wwwroot/rank-harvester/deploy/.env
+ExecStart=/usr/bin/java --enable-native-access=ALL-UNNAMED -Dfile.encoding=UTF-8 -Duser.timezone=Asia/Shanghai -jar /www/wwwroot/rank-harvester/app.jar
+SuccessExitStatus=143
+Restart=on-failure
+RestartSec=5
+# 资源限制（按需）
+# MemoryMax=2G
+
+[Install]
+WantedBy=multi-user.target

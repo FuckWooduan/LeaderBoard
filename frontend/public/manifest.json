@@ -1,0 +1,21 @@
+{
+  "name": "氪佬修仙 · 生死狙击排行榜",
+  "short_name": "生死狙击榜",
+  "description": "生死狙击实时排行榜与玩家查询：战力榜、经验榜、天梯榜、战队榜、分区榜，武器库，活动通知，全站开放 API。永久免费、离线可用。",
+  "lang": "zh-CN",
+  "dir": "ltr",
+  "categories": ["games", "utilities"],
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0b1020",
+  "theme_color": "#0b1020",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

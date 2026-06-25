@@ -1,0 +1,2 @@
+rootProject.name = 'rank-harvester'
+include 'ffdec'   // 内置 JPEXS/FFDEC：活动 SWF → 长图 PNG 渲染

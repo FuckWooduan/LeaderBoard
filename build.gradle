@@ -1,0 +1,101 @@
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '4.0.6'
+    id 'io.spring.dependency-management' version '1.1.7'
+    // 前端（frontend/ Next.js 静态导出）构建：自动下载 Node，服务器无需预装
+    id 'com.github.node-gradle.node' version '7.1.0'
+}
+
+group = 'com.rankharvester'
+version = '0.1.0-SNAPSHOT'
+
+java {
+    toolchain {
+        // 与主仓 StrikeGod.Engine 对齐
+        languageVersion = JavaLanguageVersion.of(25)
+    }
+}
+
+repositories {
+    // 国内镜像优先，回退 Maven Central
+    maven { url 'https://maven.aliyun.com/repository/public' }
+    mavenCentral()
+}
+
+dependencies {
+    // ── Spring Boot 核心 + 调度 ──
+    implementation 'org.springframework.boot:spring-boot-starter'
+    // 轻量内嵌 Web：仅用于 actuator HTTP 健康探针（容器 HEALTHCHECK / compose 探活）
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+    // 健康检查 / 可观测端点
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+    // Redis：durable 队列 + 饥饿调度 ZSET + IPC pub/sub + 热快照缓存（Lettuce）
+    implementation 'org.springframework.boot:spring-boot-starter-data-redis'
+    // 邮件：分区排行榜订阅·排名变动通知
+    implementation 'org.springframework.boot:spring-boot-starter-mail'
+
+    // ── Netty：游戏出站 TCP / APC 编解码 ──
+    implementation 'io.netty:netty-common'
+    implementation 'io.netty:netty-buffer'
+    implementation 'io.netty:netty-transport'
+    implementation 'io.netty:netty-handler'
+    implementation 'io.netty:netty-codec'
+    // SOCKS5 出站代理（游戏 TCP 登录走 China/住宅代理，绕过海外 IP 风控）
+    implementation 'io.netty:netty-handler-proxy'
+
+    // ── 嵌入式列式存储：榜定义 / 账号注册表 / 最新快照明细 ──
+    implementation 'org.duckdb:duckdb_jdbc:1.5.3.0'
+    // ── QQ 机器人风控持久层迁至 PostgreSQL（HikariCP 连接池，解决 DuckDB 单连接写锁竞争）──
+    implementation 'org.postgresql:postgresql:42.7.4'
+    implementation 'com.zaxxer:HikariCP:5.1.0'
+
+    // ── JSON：账号配置、OneBot 推送载荷、排行榜行解析（Jackson 3 / tools.jackson）──
+    implementation 'tools.jackson.core:jackson-databind'
+
+    // 生成 IDE 配置属性提示
+    annotationProcessor 'org.springframework.boot:spring-boot-configuration-processor'
+
+    // ── 活动 SWF → 长图 PNG 渲染（移植自 StrikeGod）──
+    implementation project(':ffdec')           // 内置 JPEXS/FFDEC Flash 解析
+    // TwelveMonkeys ImageIO：增强 JPEG 读取能力（SPI 自动注册）。缺它则 SWF 内嵌 JPEG 解不出→长图黑框/tips 不全。
+    implementation 'com.twelvemonkeys.imageio:imageio-jpeg:3.13.1'
+    implementation 'com.itextpdf:kernel:9.6.0' // 活动报告 PDF（长图同时生成 PDF）
+    implementation 'com.itextpdf:io:9.6.0'
+    implementation 'com.itextpdf:layout:9.6.0'
+
+    // ── Lombok（移植的渲染类用 @Slf4j / @RequiredArgsConstructor）──
+    compileOnly 'org.projectlombok:lombok:1.18.46'
+    annotationProcessor 'org.projectlombok:lombok:1.18.46'
+
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 25
+}
+
+// ── 前端构建（Next.js SSR / standalone）────────────────────────────────────
+// 前端以独立 Node 服务部署（生产 127.0.0.1:3000，nginx 分流页面→Next、/api→Spring），
+// 不再打进 jar。此任务供本地/部署脚本统一构建用：./gradlew npmBuildFrontend
+node {
+    download = true
+    version = '22.17.0'
+    nodeProjectDir = file('frontend')
+    // 国内镜像（与上面 Maven 的 aliyun 镜像同理；npmmirror 全球可用）
+    distBaseUrl = 'https://npmmirror.com/mirrors/node/'
+}
+
+tasks.register('npmBuildFrontend', com.github.gradle.node.npm.task.NpmTask) {
+    dependsOn tasks.named('npmInstall')
+    args = ['run', 'build']
+    inputs.dir('frontend/src')
+    inputs.files('frontend/package.json', 'frontend/package-lock.json',
+            'frontend/next.config.ts', 'frontend/tsconfig.json', 'frontend/postcss.config.mjs')
+    outputs.dir('frontend/.next')
+}

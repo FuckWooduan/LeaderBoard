@@ -1,0 +1,100 @@
+# =============================================================================
+# rank-harvester — Docker Compose
+#
+# 三容器架构：
+#   redis   — 数据队列 / IPC pub-sub / 热快照缓存
+#   napcat  — NapCat QQ OneBot v11 HTTP 网关（需首次扫码登录）
+#   app     — rank-harvester 本体（Spring Boot，含嵌入式 DuckDB）
+#
+# 首次部署步骤：
+#   1. 复制账号配置：cp config/accounts.example.json config/accounts.json 并填写
+#   2. 启动 napcat 完成扫码：docker compose up napcat
+#      进入容器控制台扫码，成功后 Ctrl-C，登录状态持久化到 ./deploy/napcat/
+#   3. 在 NapCat WebUI 配置 HTTP Server：端口 3000，access_token 与下方
+#      RANKHARVESTER_QQBOT_ACCESSTOKEN 保持一致
+#   4. 全量启动：docker compose up -d --build
+#   5. 验证健康：curl http://localhost:8080/actuator/health
+#
+# 端口说明：
+#   8080  — app Spring Boot Actuator（仅宿主 127.0.0.1，不对外）
+#   napcat 3000 — OneBot HTTP API（仅容器内网，app 通过服务名访问）
+# =============================================================================
+
+services:
+
+  # ─── Redis：队列 + IPC + 缓存 ───────────────────────────────────────────────
+  redis:
+    image: redis:8-alpine
+    container_name: rank-harvester-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass CHANGE_ME_REDIS_PASSWORD
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "CHANGE_ME_REDIS_PASSWORD", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    # Redis 不对外暴露端口，只允许容器内网访问
+    expose:
+      - "6379"
+
+  # ─── NapCat：QQ OneBot v11 HTTP 网关 ────────────────────────────────────────
+  # 首次启动需扫码登录，登录状态持久化到 ./deploy/napcat/
+  # 在 NapCat WebUI（默认 6099 端口，仅宿主可达）配置：
+  #   · HTTP Server → 端口 3000，启用
+  #   · access_token → 与 RANKHARVESTER_QQBOT_ACCESSTOKEN 保持一致
+  napcat:
+    image: mlikiowa/napcat-docker:latest
+    container_name: rank-harvester-napcat
+    restart: unless-stopped
+    environment:
+      # QQ 账号，填入实际机器人 QQ 号
+      ACCOUNT: "${NAPCAT_QQ_ACCOUNT:-}"
+      # NapCat WebUI 管理密码（可选）
+      # NAPCAT_WEB_UI_PASSWORD: "your_webui_password"
+    volumes:
+      # 持久化登录态与 NapCat 配置（含 HTTP Server 设置）
+      - ./deploy/napcat:/app/.config/QQ
+    # OneBot HTTP API 仅暴露给容器内网，不映射到宿主
+    expose:
+      - "3000"
+    # WebUI 仅映射到宿主 127.0.0.1，便于首次配置
+    ports:
+      - "127.0.0.1:6099:6099"
+
+  # ─── app：rank-harvester 主服务 ───────────────────────────────────────────────
+  app:
+    build: .
+    container_name: rank-harvester-app
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      TZ: "Asia/Shanghai"
+      # Redis 连接（通过 Docker 内网服务名）
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: "6379"
+      # QQ 推送配置
+      RANKHARVESTER_QQBOT_ENABLED: "${RANKHARVESTER_QQBOT_ENABLED:-false}"
+      RANKHARVESTER_QQBOT_HTTPBASEURL: "http://napcat:3000"
+      # 与 NapCat HTTP Server 设置的 access_token 一致；留空则不带 Authorization header
+      RANKHARVESTER_QQBOT_ACCESSTOKEN: "${QQBOT_ACCESS_TOKEN:-}"
+      # 推送目标群号列表，逗号分隔，例如：123456789,987654321
+      RANKHARVESTER_QQBOT_GROUPIDS: "${QQBOT_GROUP_IDS:-}"
+      RANKHARVESTER_QQBOT_TIMEOUTSECONDS: "10"
+    volumes:
+      # DuckDB 数据文件持久化
+      - ./data:/app/data
+      # 账号配置（只读挂载，敏感文件）
+      - ./config:/app/config:ro
+    ports:
+      # actuator 健康检查端口，仅宿主可达
+      - "127.0.0.1:8080:8080"
+
+# ── 命名 Volume ──────────────────────────────────────────────────────────────
+volumes:
+  redis-data:
+    driver: local

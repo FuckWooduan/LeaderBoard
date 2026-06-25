@@ -1,0 +1,55 @@
+// ─────────────────────────────────────────────────
+// ffdec 模块：内置 JPEXS Free Flash Decompiler 解析库源码
+// （从 StrikeGod.Engine 移植，用于活动 SWF → 长图 PNG 渲染）
+// ─────────────────────────────────────────────────
+
+plugins {
+  id 'java-library'
+}
+
+java {
+  toolchain {
+    languageVersion = JavaLanguageVersion.of(25)
+  }
+}
+
+repositories {
+  maven { url 'https://maven.aliyun.com/repository/public' }
+  mavenCentral()
+  // webp-imageio (com.github.gotson) 在 JitPack
+  maven { url 'https://jitpack.io' }
+}
+
+dependencies {
+  implementation 'org.tomlj:tomlj:1.1.1'
+  implementation 'net.java.dev.jna:jna:5.18.1'
+  implementation 'net.java.dev.jna:jna-platform:5.18.1'
+  implementation 'ch.randelshofer:org.monte.media:17.2.1'
+  implementation 'com.twelvemonkeys.imageio:imageio-tga:3.13.1'
+  implementation 'com.github.gotson:webp-imageio:0.2.2'
+  implementation 'org.apache.commons:commons-compress:1.28.0'
+}
+
+sourceSets {
+  main {
+    java {
+      exclude 'com/strikegod/engine/ffdec/jpexs/decompiler/flash/xfl/XFLConverter.java'
+      exclude 'com/strikegod/engine/ffdec/jpexs/decompiler/flash/xfl/**'
+      exclude 'com/strikegod/engine/ffdec/jpexs/decompiler/flash/exporters/XamlExporter.java'
+      exclude 'com/strikegod/engine/ffdec/jpexs/decompiler/flash/exporters/shape/XamlShapeExporter.java'
+      exclude 'com/strikegod/engine/ffdec/jpexs/decompiler/flash/tags/converters/TextTypeConverter.java'
+      exclude 'com/strikegod/engine/ffdec/jpexs/decompiler/flash/jna/**'
+    }
+    resources {
+      srcDir 'src/main/java'
+      exclude '**/*.java'
+      exclude 'com/strikegod/engine/ffdec/jpexs/decompiler/flash/xfl/**'
+      exclude 'com/strikegod/engine/ffdec/jpexs/decompiler/flash/jna/**'
+      exclude 'com/strikegod/engine/ffdec/jpexs/decompiler/flash/exporters/XamlExporterStub.zip'
+    }
+  }
+}
+
+tasks.withType(JavaCompile).configureEach {
+  options.release = 25
+}

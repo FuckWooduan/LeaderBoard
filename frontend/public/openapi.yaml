@@ -1,0 +1,1088 @@
+openapi: 3.0.3
+info:
+  title: StrikeGod 排行榜对外查询 API
+  version: "1.0.0"
+  description: |
+    排行榜查询服务的**对外公开**只读接口。无需鉴权，直接 GET 即可。
+
+    ## 两套「区服编号」务必区分（最常见的坑）
+
+    游戏里一个区服有两个编号，本 API 不同端点用的是**不同**的那一个：
+
+    | 端点 | `server` 用哪种编号 | 取值来源 |
+    |------|--------------------|----------|
+    | `/servers`、`/tab`、`/board` | **登录 id（loginId）** | 即 `/api/public/servers` 返回的 `id` 字段 |
+    | `/player` | **对外服号（districtId）** | 玩家在游戏客户端里看到的服号 |
+
+    > 同一个区，loginId 与 districtId 数值通常**不一样**。例如「联通四区」loginId=10、districtId=16。
+    > 如果把 loginId 当 districtId 传给 `/player`，会查到**别的区**或返回「未知区服」。
+
+    ### 区服对照表（loginId ↔ districtId ↔ 区服名）
+
+    | loginId | 区服名 | districtId |
+    |--------:|--------|-----------:|
+    | 1  | 双线一区 | 5  |
+    | 2  | 电信一区 | 6  |
+    | 3  | 联通一区 | 7  |
+    | 4  | 电信二区 | 8  |
+    | 5  | 联通二区 | 9  |
+    | 6  | 电信三区 | 10 |
+    | 7  | 电信四区 | 12 |
+    | 8  | 联通三区 | 13 |
+    | 9  | 电信五区 | 14 |
+    | 10 | 联通四区 | 16 |
+    | 11 | 电信六区 | 17 |
+    | 12 | 双线二区 | 19 |
+    | 13 | 电信七区 | 22 |
+    | 14 | 联通五区 | 18 |
+    | 15 | 电信八区 | 24 |
+    | 16 | 联通六区 | 28 |
+    | 17 | 双线三区 | 31 |
+    | 18 | 双线四区 | 42 |
+    | 19 | 双线五区 | 45 |
+    | 21 | 双线七区 | 52 |
+
+    ## 名次「过滤不变」语义
+
+    `/tab` 的 `q`（模糊搜名）与 `vip`（VIP 等级）过滤，名次都是**先按整榜算好再过滤**——
+    所以搜出来的某个人，名次仍是 45 名而不会因过滤变成第 1 名。
+
+    ## 行数据 `rows` 是动态列
+
+    `rows[]` 里每个对象的字段**由同一响应的 `fields[]` 决定**（`fields[].key` 即列名）。
+    不同榜列不一样，请按 `fields` 动态渲染，不要写死列名。`fields[].render` 是建议的展示类型。
+servers:
+  - url: https://example.com
+    description: 生产环境
+  - url: http://127.0.0.1:8080
+    description: 本地
+
+tags:
+  - name: 榜单
+    description: 排行榜列表 / 分页 / 标签查询
+  - name: 玩家
+    description: 玩家在线状态与名次查询
+  - name: 武器
+    description: 武器库与配件/技能/词缀检索
+  - name: 分区
+    description: |
+      分区排行榜（按 rankKey 分 200 个分区）+ 隐藏名次 AI 预测。
+      **分区榜的分区 partition 是 1-200 的榜内分组**，不是电信/联通/双线游戏大区。
+      可按后台标签分类：异能榜 / 终极榜 / 副本榜 / 乱斗榜 / 彩金币榜 / 深空榜 / 自定义标签。
+  - name: 活动
+    description: |
+      游戏活动列表 / 新活动轮询 feed / 活动长图。**机器人无需主动推送能力**：定时轮询
+      `/api/public/activity/feed`（游标式，首次基线不推、之后带 `since` 取增量）即可发现新活动并自行推送。
+  - name: MCP
+    description: |
+      `/mcp` 暴露给 AI/MCP 客户端的只读工具层（JSON-RPC 2.0）。工具描述刻意强调「游戏大区」与「分区榜分区」的区别，避免模型误填参数。
+  - name: 站点
+    description: 访问统计 / 公告
+  - name: 账号
+    description: 站点账号注册 / 登录（玩家在线查询需登录态）
+  - name: API Key
+    description: |
+      程序化调用通道。**登录后在「个人中心」（/account）自助生成你的 API Key**（每账号一个，可随时重置），
+      用它调用 `/api/key/**` 接口 —— 等同登录态、**免人机验证**，适合脚本/机器人接入。
+      鉴权方式：请求头 `X-API-Key: sk_xxx` 或 `Authorization: Bearer sk_xxx`。
+
+paths:
+  /api/auth/register:
+    post:
+      tags: [账号]
+      summary: 注册站点账号（注册即登录）
+      description: |
+        开放注册（Cloudflare Turnstile 拦机器人，启用时需带 `cfToken`）。成功直接发 30 天会话：
+        响应体含 `token`，同时写 HttpOnly cookie `user_token`。
+        带有效的管理员邀请码（后台签发，`inv_` 开头、一次性、7 天有效）则注册为**管理员**。
+        业务失败统一 `{ok:false, message}`（HTTP 200）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string, description: 2-24 位，中文/字母/数字/下划线/连字符 }
+                password: { type: string, description: 8-72 位 }
+                inviteCode: { type: string, description: 管理员邀请码（可选） }
+                cfToken: { type: string, description: Cloudflare Turnstile 挑战 token（人机验证二选一；配置见 /api/public/captcha-config） }
+                gtPayload: { type: string, description: 极验 GeeTest v4 getValidate() 的 JSON 串（人机验证二选一，与 cfToken 任一即可） }
+      responses:
+        "200":
+          description: 注册结果
+          content:
+            application/json:
+              example: { ok: true, token: "su_xxx", username: "示例", role: "USER" }
+
+  /api/auth/login:
+    post:
+      tags: [账号]
+      summary: 登录
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string }
+      responses:
+        "200":
+          description: 登录结果（成功含 token + 写 cookie；失败 `{ok:false, message}`）
+          content:
+            application/json:
+              example: { ok: true, token: "su_xxx", username: "示例", role: "USER" }
+
+  /api/auth/logout:
+    post:
+      tags: [账号]
+      summary: 退出登录（销毁会话 + 清 cookie）
+      responses:
+        "200": { description: "{ok:true}" }
+
+  /api/auth/me:
+    get:
+      tags: [账号]
+      summary: 当前会话信息
+      description: 携带 cookie `user_token` 或头 `X-User-Token`。未登录返回 `{ok:false}`。
+      responses:
+        "200":
+          description: 会话信息
+          content:
+            application/json:
+              example: { ok: true, username: "示例", role: "USER" }
+
+  /api/public/captcha-config:
+    get:
+      tags: [站点]
+      summary: 人机验证配置（极验 GeeTest / Cloudflare Turnstile，二选一）
+      description: |
+        前端渲染人机验证组件所需的公开配置。弹窗默认走极验（对中国用户友好），可切到 Turnstile；两者任一通过即可。
+        两套 `enabled` 都为 false 时所有需验证的接口免验证。
+        极验脚本：`https://static.geetest.com/v4/gt4.js`，过挑战后把 `getValidate()` 的 JSON 放进请求体 `gtPayload`；
+        Turnstile 脚本：`https://challenges.cloudflare.com/turnstile/v0/api.js`，token 放进请求体 `cfToken`。
+      responses:
+        "200":
+          description: 配置
+          content:
+            application/json:
+              example:
+                turnstile: { enabled: true, siteKey: "" }
+                geetest: { enabled: true, captchaId: "" }
+
+  /api/user/apikey:
+    get:
+      tags: [API Key]
+      summary: 查看我的 API Key
+      description: 需站点账号登录（cookie `user_token` 或头 `X-User-Token`）。未生成过返回 `{exists:false}`。
+      responses:
+        "200":
+          description: 我的 key
+          content:
+            application/json:
+              example: { exists: true, key: "sk_xxx", active: true, createdAt: 1781100000000, callCount: 42 }
+        "401":
+          description: 未登录站点账号
+
+  /api/user/apikey/reset:
+    post:
+      tags: [API Key]
+      summary: 生成 / 重置我的 API Key
+      description: |
+        每个账号一个 key；重置后**旧 key 立即失效**。需站点账号登录。
+        也可在网页「个人中心」（https://example.com/account）操作。
+      responses:
+        "200":
+          description: 新 key
+          content:
+            application/json:
+              example: { ok: true, key: "sk_xxx", createdAt: 1781100000000 }
+        "401":
+          description: 未登录站点账号
+
+  /api/key/player:
+    get:
+      tags: [API Key]
+      summary: 玩家在线查询（API Key 通道）
+      description: |
+        与 `GET /api/public/player` 同等能力，但走 **API Key 鉴权**（免登录态、免人机验证），
+        适合脚本/机器人接入。鉴权：请求头 `X-API-Key: sk_xxx` 或 `Authorization: Bearer sk_xxx`。
+        返回结构与 `/api/public/player` 完全一致（见「玩家」章节的 PlayerResult 四种形态）。
+      parameters:
+        - { name: name, in: query, required: true, description: 角色名（精确）, schema: { type: string } }
+        - name: server
+          in: query
+          required: true
+          description: 对外服号 districtId（玩家在游戏客户端里看到的服号，见顶部对照表）
+          schema: { type: string }
+          example: "16"
+      responses:
+        "200":
+          description: 查询结果（结构同 /api/public/player）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PlayerResult" }
+        "401":
+          description: 无效或已停用的 API key
+
+  /api/key/player/location:
+    get:
+      tags: [API Key]
+      summary: 在线玩家位置（API Key 通道）
+      description: |
+        与 `GET /api/public/player/location` 同等能力，走 API Key 鉴权。
+        `charId` 来自 `/api/key/player` 返回的 `characterId`（玩家在线时才有意义）。
+      parameters:
+        - { name: server, in: query, required: true, description: 对外服号 districtId, schema: { type: string }, example: "16" }
+        - { name: charId, in: query, required: true, description: 角色 id, schema: { type: integer, format: int64 } }
+      responses:
+        "200":
+          description: 位置
+          content:
+            application/json:
+              example: { available: true, inGame: false, channel: "新手1", room: 0 }
+        "401":
+          description: 无效或已停用的 API key
+
+  /api/public/boards:
+    get:
+      tags: [榜单]
+      summary: 已开放的榜列表
+      description: |
+        返回当前**对外可见**的所有榜。规则：**只要落地表里有数据就显示**（边抓边自动出现），
+        或后台显式开放。一般用于调试/枚举；前台展示推荐用 `/servers` + `/tab`。
+      responses:
+        "200":
+          description: 榜列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/BoardBrief" }
+              example:
+                - { code: "REDUCED:382:10", type: "REDUCED", kind: "PER_SERVER", server: "10" }
+                - { code: "REDUCED:333:all", type: "REDUCED", kind: "CROSS_SERVER", server: "all" }
+
+  /api/public/servers:
+    get:
+      tags: [榜单]
+      summary: 某标签可选的区服列表
+      description: |
+        返回该标签下**有数据/已开放**的区服选项，用于渲染「区服下拉」。
+        返回的 `id` 是**登录 id（loginId）**，可直接作为 `/tab` 与 `/board` 的 `server` 使用；
+        但**不可**直接给 `/player`（`/player` 要 districtId，见顶部对照表）。
+      parameters:
+        - name: tab
+          in: query
+          required: true
+          description: |
+            榜标签，决定取哪类榜的区服集合：
+            - `power`：战力榜（同服 `REDUCED:382:<loginId>`）
+            - `exp`：经验榜（同服 `REDUCED:331:<loginId>`）
+            - `ladder`：天梯榜（`LADDER:23:<loginId>`）
+          schema:
+            type: string
+            enum: [power, exp, ladder]
+          example: power
+      responses:
+        "200":
+          description: 区服选项（按 loginId 升序）
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ServerOption" }
+              example:
+                - { id: "1", name: "双线一区" }
+                - { id: "6", name: "电信三区" }
+                - { id: "10", name: "联通四区" }
+
+  /api/public/tab:
+    get:
+      tags: [榜单]
+      summary: 标签分页查询（前台主用）
+      description: |
+        前台「战力/经验/天梯/战队」标签的统一分页查询。每页 **100** 行。
+        响应 `fields[]` 描述当前榜可见列，`rows[]` 为对应数据行（动态列，含 `rank` 名次）。
+      parameters:
+        - name: tab
+          in: query
+          required: true
+          description: |
+            标签：
+            - `power` 战力榜、`exp` 经验榜、`ladder` 天梯榜（这三类受 `server`/`q`/`vip` 影响）
+            - `team` 战队榜（受 `server`/`q`/`sort` 影响，**不支持 `vip`**）
+          schema:
+            type: string
+            enum: [power, exp, ladder, team]
+          example: power
+        - name: server
+          in: query
+          required: false
+          description: |
+            **登录 id（loginId）**，取值来自 `/servers` 的 `id`。
+            - 留空 = **跨服/全部**：power→`REDUCED:333:all`、exp→`REDUCED:332:all`、ladder→`LADDER:23:all`；
+              team 留空 = **全服聚合**（所有区战队一起比）。
+            - 非空 = 单区，例如 `10` = 联通四区。
+            注意：这里是 loginId，不是 districtId。
+          schema: { type: string }
+          example: "10"
+        - name: page
+          in: query
+          required: false
+          description: 页码，从 1 开始；每页 100 行。超出范围返回空 `rows`。
+          schema: { type: integer, minimum: 1, default: 1 }
+          example: 1
+        - name: q
+          in: query
+          required: false
+          description: |
+            模糊关键字，按**角色名 / 战队名**（战队榜按战队名/队长）ILIKE 匹配。
+            **名次不变**：名次按整榜算好再过滤，搜出来的人仍是其真实名次。
+          schema: { type: string }
+          example: 唐家
+        - name: vip
+          in: query
+          required: false
+          description: |
+            VIP 等级精确过滤（`score_all_number == vip`），**仅 `power`/`exp` 榜生效**。
+            取值 0–18。同样**名次不变**。`team`/`ladder` 传了会被忽略。
+          schema: { type: integer, minimum: 0, maximum: 18 }
+          example: 14
+        - name: sort
+          in: query
+          required: false
+          description: |
+            **仅 `team`（战队榜）生效**的排序模式：
+            - 缺省/其它 = 按**普通**（`team_exp`）排
+            - `adventure` = 按**冒险**（`rpg_team_total_bonus`）排
+          schema:
+            type: string
+            enum: [adventure]
+          example: adventure
+      responses:
+        "200":
+          description: 分页结果
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RankPage" }
+        "404":
+          description: 标签/区服无法解析为有效榜
+        "403":
+          description: 该榜未开放
+
+  /api/public/board:
+    get:
+      tags: [榜单]
+      summary: 按榜 code 分页查询
+      description: |
+        直接用内部榜 `code` 分页查询（每页 100）。`code` 形如 `REDUCED:382:10`（战力·loginId 10）、
+        `REDUCED:333:all`（跨服战力）、`LADDER:23:5`、`TEAM:10` 等。一般用 `/tab` 即可，此接口面向已知 code 的调用方。
+      parameters:
+        - name: code
+          in: query
+          required: true
+          description: |
+            榜 code，格式 `<类型>:<榜号>:<loginId|all>`。常见：
+            - `REDUCED:382:<loginId>` 同服战力、`REDUCED:331:<loginId>` 同服经验
+            - `REDUCED:333:all` 跨服战力、`REDUCED:332:all` 跨服经验
+            - `LADDER:23:<loginId>` 天梯、`TEAM:<loginId>` 战队
+          schema: { type: string }
+          example: "REDUCED:382:10"
+        - name: page
+          in: query
+          required: false
+          description: 页码，从 1 开始；每页 100 行。
+          schema: { type: integer, minimum: 1, default: 1 }
+          example: 1
+      responses:
+        "200":
+          description: 分页结果
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RankPage" }
+        "404":
+          description: 未知 code
+        "403":
+          description: 该榜未开放
+
+  /api/public/player:
+    get:
+      tags: [玩家]
+      summary: 玩家在线状态 + 名次查询
+      description: |
+        登录目标区服 → 按角色名精确查 → 取在线状态/位置，并附带该玩家在本区**战力榜/经验榜**的真实名次与数值。
+
+        三种结果形态（用顶层标志区分）：
+        - **正常**：`available=true`，含 `online/lv/teamName/serverName/power/exp` 等。
+        - **查无此人**：`available=true, notFound=true`，前端可改用 `/tab?q=` 跨服模糊「你可能想找？」。
+        - **在线查询超时但有榜单数据**：`available=true, queryFailed=true`，仍返回 `power`/`exp`（兜底展示）。
+        - **不可用**：`available=false`，`message` 说明原因（如未知区服）。
+
+        > 🔐 **需登录站点账号**：携带登录 cookie `user_token` 或请求头 `X-User-Token`
+        > （`POST /api/auth/login` / `POST /api/auth/register` 获取），未登录返回 **401**。
+        > 程序化调用请改用 `GET /api/key/player`（API Key 通道，登录后在「个人中心」自助生成，见「API Key」章节）。
+      parameters:
+        - name: name
+          in: query
+          required: true
+          description: 角色名（精确）。游戏内角色名可能带后缀符号，按服务端返回的 `charName` 为准。
+          schema: { type: string }
+          example: 唐家大掌门
+        - name: server
+          in: query
+          required: true
+          description: |
+            **对外服号（districtId）**，即玩家在游戏客户端里看到的服号——**不是** `/servers` 的 loginId！
+            参见顶部对照表，例如「联通四区」此处填 `16`（其 loginId 才是 10）。
+            非法/未收录的 districtId 返回 `available=false, message="未知区服: …"`。
+          schema: { type: string }
+          example: "16"
+      responses:
+        "200":
+          description: 查询结果（见 description 的四种形态）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PlayerResult" }
+              examples:
+                正常:
+                  value:
+                    available: true
+                    charName: 唐家大掌门
+                    online: false
+                    lv: 11
+                    teamName: ""
+                    server: "16"
+                    serverName: 联通四区
+                    logoutTime: 1696154514506
+                    power: { rank: 1, value: 999999 }
+                    exp: { rank: 3, value: 888888 }
+                查无此人:
+                  value: { available: true, notFound: true, name: 路人甲, server: "16" }
+                在线查询超时兜底:
+                  value:
+                    available: true
+                    queryFailed: true
+                    charName: 唐家大掌门
+                    server: "16"
+                    serverName: 联通四区
+                    message: 在线状态查询超时，以下为榜单数据
+                    power: { rank: 1, value: 999999 }
+                    exp: { rank: 3, value: 888888 }
+        "401":
+          description: 未登录站点账号（先 `POST /api/auth/login` 或注册）
+
+  /api/public/weapon/search:
+    get:
+      tags: [武器]
+      summary: 武器 + 配件/技能/词缀 统一检索
+      description: |
+        对**武器**与**辅助条目**（武器技能 / 配件槽位 / 配件 / 配件技能 / 重构词缀 / 武器属性面板）做
+        **全字符串模糊**检索，合并为一个分页列表（武器在前），每页 **100**。
+        条目 `type=entry` 含 `payload`（该记录完整原始 JSON 字符串，可解析后展示全部字段）。
+      parameters:
+        - name: q
+          in: query
+          required: false
+          description: 关键字，对每条记录的**所有字符串字段**（去 HTML）做 ILIKE 模糊匹配。留空返回空结果。
+          schema: { type: string }
+          example: 姜维
+        - name: page
+          in: query
+          required: false
+          description: 页码，从 1 开始；每页 100。
+          schema: { type: integer, minimum: 1, default: 1 }
+          example: 1
+      responses:
+        "200":
+          description: 合并分页结果
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WeaponSearchPage" }
+
+  /api/public/weapon/{id}:
+    get:
+      tags: [武器]
+      summary: 武器详情（基础 + 面板）
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 武器 id（来自 `/weapon/search` 结果里 `type=weapon` 项的 `id`）。
+          schema: { type: integer, format: int64 }
+          example: 2038
+      responses:
+        "200":
+          description: 武器详情
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Weapon" }
+        "404":
+          description: 未找到该武器
+
+  /api/public/visit:
+    get:
+      tags: [站点]
+      summary: 访问统计（去重）+ 记一次访问
+      description: |
+        调用即按客户端 IP **去重**记一次访问，并返回统计：
+        - `today`：当天独立访客（Redis SET，精确）
+        - `total`：累计独立访客（Redis HyperLogLog，近似、省内存）
+      responses:
+        "200":
+          description: 统计
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  today: { type: integer, description: 当天独立访客数 }
+                  total: { type: integer, description: 累计独立访客数（近似） }
+              example: { today: 128, total: 5031 }
+
+  /api/public/player/location:
+    get:
+      tags: [玩家]
+      summary: 在线玩家位置（频道/房间）异步补查
+      description: |
+        `/player` 拿到 `online=true` 后，前端再用本接口异步补查该玩家所在**频道/房间**（尽力而为，
+        部分区/状态下游戏服不回包则返回占位）。`server` 同 `/player`，用**对外服号（districtId）**。
+        🔐 与 `/player` 同样**需登录站点账号**（cookie `user_token` 或头 `X-User-Token`），未登录 401。
+      parameters:
+        - { name: server, in: query, required: true, description: "对外服号 districtId", schema: { type: string }, example: "16" }
+        - { name: charId, in: query, required: true, description: "角色 id（来自 /player 返回的 characterId）", schema: { type: integer, format: int64 } }
+      responses:
+        "200":
+          description: 位置
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  available: { type: boolean }
+                  inGame: { type: boolean, description: 是否在游戏内（房间中） }
+                  channel: { type: string, description: 频道名（未知/超时为 "—"） }
+                  room: { type: integer, description: 房间号（0=不在房间） }
+              example: { available: true, inGame: true, channel: "16频道", room: 12 }
+
+  /api/public/marquee:
+    get:
+      tags: [站点]
+      summary: 站点公告（跑马灯）
+      description: 返回首页滚动公告文本列表（后台可配）。无公告返回空数组。
+      responses:
+        "200":
+          description: 公告列表
+          content:
+            application/json:
+              schema: { type: array, items: { type: string } }
+              example: ["欢迎使用本站", "数据每隔几分钟自动刷新"]
+
+  /api/public/messages:
+    get:
+      tags: [站点]
+      summary: 留言板（分页）
+      description: 返回前台可见留言，置顶优先、其余新→旧，每页 20。站长回复在 `reply` / `replyAt`。
+      parameters:
+        - { name: page, in: query, required: false, schema: { type: integer, minimum: 1, default: 1 } }
+      responses:
+        "200":
+          description: 留言分页
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total: { type: integer, format: int64, description: 可见留言总数 }
+                  page: { type: integer }
+                  size: { type: integer, description: 每页条数（固定 20） }
+                  messages:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer, format: int64, description: 留言楼号 }
+                        nickname: { type: string }
+                        content: { type: string }
+                        createdAt: { type: integer, format: int64, description: 发布时间戳（毫秒） }
+                        pinned: { type: boolean, description: 是否置顶 }
+                        reply: { type: string, description: 站长回复（无回复为空串） }
+                        replyAt: { type: integer, format: int64, description: 回复时间戳（毫秒，0=无） }
+              example:
+                total: 1
+                page: 1
+                size: 20
+                messages:
+                  - { id: 1, nickname: "游客", content: "这站做得不错！", createdAt: 1780275475712, pinned: false, reply: "谢谢支持～", replyAt: 1780275480000 }
+    post:
+      tags: [站点]
+      summary: 发留言
+      description: |
+        发布一条留言。需通过极验 v4 人机验证（`gt*` 四参数，前端先过验证码），邮箱必填。
+        发布后立即可见，随后 AI 异步审核（允许吐槽骂人；黄赌毒、涉政、违法内容会被下架并邮件告知原因）。
+        人机验证配置见 /api/public/captcha-config（极验 `gtPayload` 或 Turnstile `cfToken`，任一即可）。
+        限流：单 IP 每天 3 条。昵称最多 24 字（可空，默认「游客」），内容支持 Markdown、最多 2000 字。
+        业务失败返回 HTTP 200 + `{ok:false, message}`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content, email]
+              properties:
+                nickname: { type: string, maxLength: 24 }
+                email: { type: string, description: 必填；AI 审核不通过时邮件告知原因 }
+                content: { type: string, maxLength: 2000, description: 支持 Markdown（GFM） }
+                cfToken: { type: string, description: Cloudflare Turnstile 挑战 token（后端启用验证时必带） }
+      responses:
+        "200":
+          description: 发布结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  id: { type: integer, format: int64, description: 新留言楼号（成功时） }
+                  message: { type: string }
+              example: { ok: true, id: 2, message: "留言成功！" }
+
+  /api/public/activities:
+    get:
+      tags: [活动]
+      summary: 活动列表（分页，新→旧）
+      description: |
+        全部游戏活动详情（分页）。`hasImage=true` 才有长图。`lastFetchAt` / `nextDetectAt` 反映服务端抓取节奏。
+      parameters:
+        - { name: page, in: query, required: false, schema: { type: integer, default: 0 } }
+        - { name: size, in: query, required: false, schema: { type: integer, default: 24, maximum: 60 } }
+        - { name: q, in: query, required: false, description: 按标题/描述搜索, schema: { type: string } }
+      responses:
+        "200":
+          description: 活动分页
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  total: { type: integer }
+                  lastFetchAt: { type: integer, format: int64 }
+                  nextDetectAt: { type: integer, format: int64 }
+                  activities:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        activityId: { type: integer, format: int64 }
+                        title: { type: string }
+                        description: { type: string }
+                        startTime: { type: string }
+                        endTime: { type: string }
+                        hasImage: { type: boolean }
+
+  /api/public/activity/feed:
+    get:
+      tags: [活动]
+      summary: 新活动轮询 feed（游标式，机器人用）
+      description: |
+        把**抓取 → 判新 → 图片链接**全封装好，机器人只需定时 GET 即可发现新活动并自行推送（**无需主动推送/接收能力**）。
+
+        - 首次**不带** `since` → 返回最新若干条 + `isBaseline=true` + `nextSince`（当前最大 activityId）。机器人**存下 nextSince 但不要推送**（避免上线刷存量）。
+        - 之后每隔几分钟带 `?since=上次 nextSince` → 返回 activityId 大于 since 的新活动（按 id **升序**）。机器人推送它们，并把 `since` 更新为本次 `nextSince`。
+        - `hasMore=true` 表示新活动超过本页上限，应尽快再次轮询取剩余。
+
+        每条活动含长图绝对链接 `imageUrl`（服务端已预触发渲染，稍后下载即得）、SWF `swfUrl`、活动页 `pageUrl`。
+      parameters:
+        - { name: since, in: query, required: false, description: "上次返回的 nextSince（最大已见 activityId）；不传=首次基线", schema: { type: integer, format: int64 } }
+        - { name: limit, in: query, required: false, schema: { type: integer, default: 20, maximum: 60 } }
+      responses:
+        "200":
+          description: 新活动
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  isBaseline: { type: boolean, description: 首次基线（true 时不要推送，仅记 nextSince） }
+                  nextSince: { type: integer, format: int64, description: 下次请求传入的 since }
+                  hasMore: { type: boolean }
+                  count: { type: integer }
+                  serverTime: { type: integer, format: int64 }
+                  activities:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        activityId: { type: integer, format: int64 }
+                        title: { type: string }
+                        description: { type: string }
+                        descriptionText: { type: string, description: 纯文本描述（已剥 HTML） }
+                        startTime: { type: string }
+                        endTime: { type: string }
+                        hasImage: { type: boolean }
+                        imageUrl: { type: string, nullable: true, description: 活动长图 PNG 绝对地址 }
+                        swfUrl: { type: string, nullable: true }
+                        pageUrl: { type: string }
+              example:
+                ok: true
+                isBaseline: false
+                nextSince: 6520
+                hasMore: false
+                count: 1
+                activities:
+                  - activityId: 6520
+                    title: 端午限定武器
+                    descriptionText: 限时活动详情…
+                    startTime: "2026-06-01 00:00:00"
+                    endTime: "2026-06-30 23:59:59"
+                    hasImage: true
+                    imageUrl: https://example.com/api/public/activity/6520.png
+                    swfUrl: https://example.com/api/public/activity/6520.swf
+                    pageUrl: https://example.com/activity
+
+  /api/public/activity/{activityId}.png:
+    get:
+      tags: [活动]
+      summary: 活动长图（PNG）
+      description: 活动长图（含奖励/时间详情）。首次访问若未渲染返回 404（已触发后台渲染），稍后重试即得；CDN 长期缓存。
+      parameters:
+        - { name: activityId, in: path, required: true, schema: { type: integer, format: int64 } }
+      responses:
+        "200": { description: PNG 图片, content: { image/png: {} } }
+        "404": { description: 尚未渲染（已触发渲染，稍后重试） }
+
+  /api/public/activity/{activityId}.swf:
+    get:
+      tags: [活动]
+      summary: 活动 SWF（原件）
+      description: 活动 Flash 原件（前端用 Ruffle 播放）。未缓存则后台按需下载，404 时稍后重试。
+      parameters:
+        - { name: activityId, in: path, required: true, schema: { type: integer, format: int64 } }
+      responses:
+        "200": { description: SWF, content: { application/x-shockwave-flash: {} } }
+        "404": { description: 尚未就绪（已触发下载，稍后重试） }
+
+  /mcp:
+    post:
+      tags: [MCP]
+      summary: MCP server（JSON-RPC 2.0，只读工具）
+      description: |
+        Model Context Protocol 端点（由站点 Next.js 提供，地址 `https://example.com/mcp`），供 AI 助手接入。
+        支持 `initialize` / `tools/list` / `tools/call` / `ping`。工具：list_servers、ranking、list_boards、
+        slice_boards、slice_board、slice_player、weapon_search、weapon_detail、list_activities、activity_feed、
+        search_player（玩家查询需服务端配置 MCP_API_KEY）。`server` 是游戏大区、分区榜 `partition` 是榜内 0-199 分组，勿混用。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: JSON-RPC 2.0 请求
+              properties:
+                jsonrpc: { type: string, example: "2.0" }
+                id: { type: integer, example: 1 }
+                method: { type: string, example: "tools/list" }
+                params: { type: object }
+      responses:
+        "200":
+          description: JSON-RPC 2.0 响应
+          content: { application/json: {} }
+
+  /api/public/slice/keys:
+    get:
+      tags: [分区]
+      summary: 分区排行榜列表（rankKey 目录）
+      description: |
+        返回分区榜目录（一个 `rankKey` 一个分区赛季榜，每个含 200 个分区）。
+        前台通常只展示 `visible=true` 的榜；后台可看到并维护全部 rankKey。
+
+        `categories` 是后台维护的多标签分类，支持固定标签（异能榜 / 终极榜 / 副本榜 / 乱斗榜 / 彩金币榜 / 深空榜）和自定义标签。
+        `?category=异能` 会对 `categories[]` 做子串模糊匹配，适合机器人/MCP 处理「查异能榜」「看乱斗榜」这类自然语言。
+      parameters:
+        - name: category
+          in: query
+          required: false
+          description: 分类标签模糊筛选，例如 `异能` 可命中 `异能榜`；不传则返回全部。
+          schema: { type: string }
+          example: 异能
+      responses:
+        "200":
+          description: 分区榜目录
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/SliceKey" }
+              example:
+                - { rankKey: "1020001", label: "春日樱序", name: "春日樱序", categories: ["异能榜", "深空榜"], dynamic: true, visible: true, hidden: false, brawl: false, prevSeason: "", sources: 12903, maxSlices: 200, lastFetch: 1780275475712 }
+
+  /api/public/slice/board:
+    get:
+      tags: [分区]
+      summary: 分区榜分页数据
+      description: |
+        某 `rankKey` 的某个分区或**全部分区汇总**的排行榜，每页 100。响应结构同 `/board`（动态列 `fields` + `rows`，含 `rank`）。
+        隐藏榜会带 AI 预测的身份/分数。
+
+        ⚠️ **分区号 `partition` 从 0 开始**：`partition=0` 就是「第 1 区」，`partition=1` 是第 2 区，最大 `199`（共 200 区）。
+        不传 `partition`（或 `all=true`）= 全部分区汇总。
+        响应每行里的 `partition` 字段是**展示用的 1-based**（= 请求的 `partition` + 1），不要拿它当请求参数回传。
+      parameters:
+        - { name: rankKey, in: query, required: true, schema: { type: string }, example: "1020001" }
+        - { name: partition, in: query, required: false, description: "分区号，**0 开始**（partition=0 即第1区，最大199）；不传=全部分区汇总", schema: { type: integer, minimum: 0, maximum: 199 } }
+        - { name: all, in: query, required: false, description: "true=全部分区汇总（同不传 partition）", schema: { type: boolean } }
+        - { name: page, in: query, required: false, schema: { type: integer, minimum: 1, default: 1 } }
+      responses:
+        "200":
+          description: 分页榜（结构同 /board）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RankPage" }
+
+  /api/public/slice/grid:
+    get:
+      tags: [分区]
+      summary: 分区覆盖格（200 格热力）
+      description: |
+        返回某 `rankKey` 的 200 个分区各自「有多少我们的账号落在该分区」（决定能否抓到该分区榜）。
+        `coverage[i]`=分区 i+1 的来源数，0=该分区暂无号→抓不了。
+      parameters:
+        - { name: rankKey, in: query, required: true, schema: { type: string }, example: "1020001" }
+      responses:
+        "200":
+          description: 覆盖格
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rankKey: { type: string }
+                  label: { type: string }
+                  coverage: { type: array, items: { type: integer }, description: "长度 200，每格=该分区来源数" }
+
+  /api/public/slice/player:
+    get:
+      tags: [分区]
+      summary: 玩家在各分区榜的名次（按角色名）
+      description: 按**角色名模糊（子串 ILIKE）**匹配，查匹配玩家在所有 rankKey/分区里的名次与分数（跨榜聚合，可命中多个同名/含该串的玩家）。
+      parameters:
+        - { name: name, in: query, required: true, schema: { type: string }, example: 唐家大掌门 }
+      responses:
+        "200":
+          description: 该玩家的分区名次列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    rank_key: { type: string }
+                    partition_idx: { type: integer, description: 分区号(0–199) }
+                    rank: { type: integer }
+                    score_number: { type: integer, format: int64 }
+                    login_id: { type: integer }
+                    team_name: { type: string }
+                    lv: { type: integer }
+
+  /api/public/slice/progress:
+    get:
+      tags: [分区]
+      summary: 分区抓取整体进度
+      description: 分区获取与落库的整体进度（覆盖来源数、服务器数、rankKey 数、目标/已完成等），用于进度条。
+      responses:
+        "200":
+          description: 进度
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rankKeys: { type: integer }
+                  sources: { type: integer, description: 已覆盖的账号×服务器来源数 }
+                  servers: { type: integer }
+                  lastUpdate: { type: integer, format: int64 }
+                  boards: { type: object, description: "榜数据落库进度（totalRows/rowsWritten/done/failed 等）" }
+                  fetch: { type: object, description: "本轮抓取进度（submitted/done/failed/target/concurrency 等）" }
+
+components:
+  schemas:
+    BoardBrief:
+      type: object
+      description: 榜概要
+      properties:
+        code: { type: string, description: "榜 code，如 REDUCED:382:10" }
+        type: { type: string, description: "榜类型：REDUCED / LADDER / TEAM" }
+        kind: { type: string, description: "粒度：PER_SERVER（同服）/ CROSS_SERVER（跨服）等" }
+        server: { type: string, description: "区服段（loginId 或 all）" }
+
+    ServerOption:
+      type: object
+      description: 区服选项（id = loginId）
+      properties:
+        id: { type: string, description: "登录 id（loginId），可直接给 /tab、/board 的 server" }
+        name: { type: string, description: 区服名，如 联通四区 }
+
+    FieldView:
+      type: object
+      description: 一列的展示元信息
+      properties:
+        key: { type: string, description: "列名（即 rows[] 对象里的字段名）" }
+        label: { type: string, description: 中文显示名 }
+        render:
+          type: string
+          description: |
+            建议展示类型：
+            `TEXT` 文本 · `NUMBER` 数值 · `LONGTEXT` 长文本(截断+弹窗) ·
+            `DISTRICT` 区服(按 info_login_id 映射区名) · `VIP` VIP 徽章(0–18) · `REALM` 境界徽章
+
+    RankPage:
+      type: object
+      description: 榜单分页结果
+      properties:
+        code: { type: string, description: 实际查询的榜 code }
+        type: { type: string, description: 榜类型 }
+        page: { type: integer, description: 当前页码 }
+        size: { type: integer, description: 每页行数（固定 100） }
+        total: { type: integer, description: 过滤后总行数 }
+        fields:
+          type: array
+          description: 可见列定义；rows 按此动态渲染
+          items: { $ref: "#/components/schemas/FieldView" }
+        rows:
+          type: array
+          description: |
+            数据行。**动态列**：每个对象的字段由 `fields[].key` 决定，并含 `rank`（名次）。
+            常见字段：`rank` 名次、`info_char_name` 角色名、`info_lv` 等级、`info_team_name` 战队、
+            `score_number` 分值(战力/经验)、`info_login_id` 区服、`score_all_number` VIP 等级、`score_rebirth` 境界。
+          items:
+            type: object
+            additionalProperties: true
+      example:
+        code: "REDUCED:382:10"
+        type: REDUCED
+        page: 1
+        size: 100
+        total: 243
+        fields:
+          - { key: rank, label: 名次, render: TEXT }
+          - { key: info_char_name, label: 角色名, render: TEXT }
+          - { key: info_lv, label: 等级, render: NUMBER }
+          - { key: info_team_name, label: 战队, render: TEXT }
+          - { key: score_number, label: 战力, render: NUMBER }
+          - { key: info_login_id, label: 区服, render: DISTRICT }
+          - { key: score_all_number, label: VIP等级, render: VIP }
+          - { key: score_rebirth, label: 境界, render: REALM }
+        rows:
+          - rank: 1
+            info_char_name: 唐家大掌门
+            info_lv: 11
+            info_team_name: ""
+            score_number: 999999
+            info_login_id: 10
+            score_all_number: 15
+            score_rebirth: 3
+
+    SliceKey:
+      type: object
+      description: 分区榜目录项。一个 rankKey 对应一个分区赛季榜，内部最多 200 个分区。
+      properties:
+        rankKey: { type: string, description: 榜唯一键（通常是数字串） }
+        label: { type: string, description: 后台手动命名；空表示未命名 }
+        name: { type: string, description: 显示名；优先 label，否则等于 rankKey }
+        categories:
+          type: array
+          description: 多分类标签，支持异能榜/终极榜/副本榜/乱斗榜/彩金币榜/深空榜/自定义标签；`category` 查询按这里模糊匹配。
+          items: { type: string }
+        dynamic: { type: boolean, description: 是否动态刷新（每 30 分钟） }
+        visible: { type: boolean, description: 前台是否展示；内网仍可看到 false 项 }
+        hidden: { type: boolean, description: 是否隐藏赛季榜（游戏隐藏身份，服务端用 AI/上一赛季信息预测） }
+        brawl: { type: boolean, description: 是否乱斗榜；旧逻辑字段，通常也会在 categories 中带 乱斗榜 }
+        prevSeason: { type: string, description: 上一赛季 rankKey，用于隐藏榜身份递归匹配 }
+        sameZone: { type: string, description: 手动指定的同分区榜 rankKey；空表示自动判定 }
+        sources: { type: integer, description: 覆盖该榜的账号×游戏大区来源数 }
+        maxSlices: { type: integer, description: 最大分区数，通常为 200 }
+        lastFetch: { type: integer, format: int64, description: 最近抓取时间戳（毫秒） }
+
+    PlayerRank:
+      type: object
+      description: 玩家在某榜的名次+数值
+      properties:
+        rank: { type: integer, description: 真实名次 }
+        value: { type: integer, format: int64, description: 该榜分值（战力/经验） }
+
+    PlayerResult:
+      type: object
+      description: |
+        玩家查询结果。用 `available`/`notFound`/`queryFailed` 三个标志判断形态（详见端点 description）。
+      properties:
+        available: { type: boolean, description: 是否可用（false 时仅 message 有意义） }
+        notFound: { type: boolean, description: 查无此人 }
+        queryFailed: { type: boolean, description: 在线状态查询超时，但下方 power/exp 仍可用 }
+        name: { type: string, description: 请求里的名字 }
+        charName: { type: string, description: 服务端返回的真实角色名（以此为准） }
+        online: { type: boolean, description: 是否在线 }
+        lv: { type: integer, description: 等级 }
+        teamName: { type: string, description: 战队名 }
+        server: { type: string, description: "请求的 districtId（回显）" }
+        serverName: { type: string, description: 区服名 }
+        logoutTime: { type: integer, format: int64, description: 上次下线时间戳(ms)，仅离线时有意义 }
+        inGame: { type: boolean, description: 是否在游戏中（在线时） }
+        channel: { type: string, description: 频道名（在线时） }
+        room: { type: integer, description: 房间号（在线时） }
+        message: { type: string, description: 提示信息（不可用/超时时） }
+        power: { $ref: "#/components/schemas/PlayerRank" }
+        exp: { $ref: "#/components/schemas/PlayerRank" }
+
+    WeaponSearchPage:
+      type: object
+      description: 武器+条目统一搜索分页
+      properties:
+        total: { type: integer, description: 武器命中数 + 条目命中数 }
+        page: { type: integer }
+        size: { type: integer, description: 固定 100 }
+        items:
+          type: array
+          items:
+            type: object
+            description: "type=weapon 为武器精简项；type=entry 为辅助条目（含完整 payload）"
+            properties:
+              type: { type: string, enum: [weapon, entry] }
+              id: { type: integer, format: int64, description: "武器 id（type=weapon）" }
+              name: { type: string }
+              codeName: { type: string, description: "武器代号（type=weapon）" }
+              typeLabel: { type: string, description: "武器类型中文名（type=weapon）" }
+              catLabel: { type: string, description: "条目类别名（type=entry），如 武器技能/配件/重构词缀/武器属性" }
+              key: { type: string, description: "条目主键（type=entry）" }
+              detail: { type: string, description: "条目摘要/面板文本（type=entry）" }
+              payload: { type: string, description: "条目完整原始 JSON 字符串（type=entry），解析后可展示全部字段" }
+
+    Weapon:
+      type: object
+      description: 武器详情（基础属性 + 面板）
+      properties:
+        id: { type: integer, format: int64 }
+        name: { type: string, description: 武器名 }
+        codeName: { type: string, description: 代号 }
+        type: { type: integer }
+        subType: { type: integer }
+        typeLabel: { type: string, description: 类型中文名（步枪/狙击/冲锋枪…） }
+        description: { type: string, description: 描述（可能含 HTML） }
+        specific: { type: string, description: 特性文本 }
+        tags: { type: string, description: 标签 }
+        icon: { type: string, description: 图标资源 }
+        penetrate: { type: number, description: 穿透 }
+        fireRate: { type: number, description: 射速 }
+        power: { type: number, description: 威力 }
+        accurate: { type: number, description: 精准 }
+        stability: { type: number, description: 稳定 }
+        weight: { type: number, description: 便携 }
+        bullet: { type: number, description: 弹匣 }
+        bulletMax: { type: number, description: 弹匣上限 }

@@ -1,0 +1,25 @@
+[
+  {
+    "server": "9",
+    "account": "联通二区侦察号登录名",
+    "password": "密码",
+    "pauth": "网页会话 pauth 令牌",
+    "uid": "可空",
+    "level": 94
+  },
+  {
+    "server": "9",
+    "account": "同区低等级小号(看新手频道用)",
+    "password": "密码",
+    "pauth": "网页会话 pauth 令牌",
+    "uid": "",
+    "level": 12
+  },
+  {
+    "server": "6",
+    "account": "电信一区侦察号登录名",
+    "password": "密码",
+    "pauth": "网页会话 pauth 令牌",
+    "uid": ""
+  }
+]

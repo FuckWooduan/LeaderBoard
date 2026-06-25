@@ -1,0 +1,35 @@
+{
+  "network": {
+    "httpServers": [
+      {
+        "enable": true,
+        "name": "strikegod-http",
+        "host": "127.0.0.1",
+        "port": 3010,
+        "enableCors": true,
+        "enableWebsocket": false,
+        "messagePostFormat": "array",
+        "token": "",
+        "debug": false
+      }
+    ],
+    "httpSseServers": [],
+    "httpClients": [
+      {
+        "enable": true,
+        "name": "strikegod-event",
+        "url": "http://127.0.0.1:3100/qqbot/event",
+        "messagePostFormat": "array",
+        "reportSelfMessage": false,
+        "token": "",
+        "debug": false
+      }
+    ],
+    "websocketServers": [],
+    "websocketClients": [],
+    "plugins": []
+  },
+  "musicSignUrl": "",
+  "enableLocalFile2Url": false,
+  "parseMultMsg": false
+}

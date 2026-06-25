@@ -1,0 +1,64 @@
+# ── Gradle ────────────────────────────────────────────────────────────────────
+build/
+.gradle/
+!gradle/wrapper/gradle-wrapper.jar
+!gradle/wrapper/gradle-wrapper.properties
+
+# ── Java 编译产物 ──────────────────────────────────────────────────────────────
+*.class
+*.jar
+!gradle/wrapper/gradle-wrapper.jar
+
+# ── IDE ────────────────────────────────────────────────────────────────────────
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+*.swp
+*.swo
+
+# ── AI / 工具本地态（不入库）────────────────────────────────────────────────────
+.omc/
+.claude/
+.cursor/
+
+# ── NapCat 登录态（容器挂载，不入库）──────────────────────────────────────────
+deploy/napcat/
+
+# ── 日志 ───────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── 运行时数据（DuckDB 文件、快照缓存）────────────────────────────────────────
+data/
+
+# ── 敏感配置：本地账号文件不入库，保留示例文件 ────────────────────────────────
+config/accounts.json
+# config/accounts.example.json  ← 保留入库，作为配置模板
+config/scout-accounts.json
+# config/scout-accounts.example.json  ← 保留入库，作为配置模板（频道大厅侦察号）
+
+# ── 前端（Next.js）────────────────────────────────────────────────────────────
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/next-env.d.ts
+frontend/tsconfig.tsbuildinfo
+# Ruffle 播放器（prebuild 时从 node_modules 拷贝）
+frontend/public/ruffle/
+# Swagger UI 文档静态资源（prebuild 时从 node_modules 拷贝）
+frontend/public/swagger/
+# Gradle node 插件下载的 Node 发行版
+.gradle-node/
+
+# ── macOS ──────────────────────────────────────────────────────────────────────
+.DS_Store
+
+# ── 临时文件 ───────────────────────────────────────────────────────────────────
+*.tmp
+*.bak
+
+# ── 参考用 ───────────────────────────────────────────────────────────────────
+docs/Lobby/
+docs/AirLobbyPreloader/

@@ -1,0 +1,34 @@
+# 单镜像运行时：NapCat(LinuxQQ) 基础上叠加 JRE(Spring) + Node(Next.js SSR) + sing-box(玩家查询出口) + CJK 字体。
+# 一个容器内由 super-entrypoint.sh 看门狗式托管 4 个进程（任一崩溃自动重启）。
+# app.jar / web / 配置 由 compose 绑定挂载，不入镜像。
+FROM mlikiowa/napcat-docker:latest
+
+# ── JRE 25（Spring Boot 后端）──────────────────────────────────────────────
+COPY --from=eclipse-temurin:25-jre /opt/java/openjdk /opt/java/openjdk
+ENV JAVA_HOME=/opt/java/openjdk
+ENV PATH="/opt/java/openjdk/bin:${PATH}"
+
+# ── Node 22（Next.js standalone server.js；基础镜像内只有 QQ 自带 node，无独立 node）──
+COPY --from=node:22-bookworm-slim /usr/local/bin/node /usr/local/bin/node
+
+# ── 内置 sing-box（玩家查询本地 SOCKS5 出口），锁版本 v1.12.5 ──────────────────
+COPY --from=ghcr.io/sagernet/sing-box:v1.12.5 /usr/local/bin/sing-box /usr/local/bin/sing-box
+
+# ── 运行时依赖 ───────────────────────────────────────────────────────────────
+# 基础镜像里 linuxqq 缺 xdg-utils 依赖、apt 处于半坏状态；先用 --fix-broken 装上 xdg-utils 让 apt 能解析。
+# fonts-noto-cjk+fontconfig：活动长图 Java2D 渲染中文；ca-certificates：SMTP/HTTPS 出站(缺它邮件TLS失败)；
+# procps：提供 pkill，后端按后台配置重生成 sing-box 配置后 `pkill -x sing-box` 触发看门狗用新配置重启。
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends --fix-broken \
+        xdg-utils fonts-noto-cjk fontconfig ca-certificates procps \
+    && fc-cache -f \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── OneBot 网络模板：HTTP 服务端 3010（MODE=strikegod 时生效；仅推送、不开 WS 收消息）──
+COPY deploy/napcat-onebot11.json /app/templates/strikegod.json
+
+# ── 看门狗 entrypoint：同容器拉起 app + web + sing-box + napcat ────────────────
+COPY deploy/super-entrypoint.sh /usr/local/bin/super-entrypoint.sh
+RUN chmod +x /usr/local/bin/super-entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/super-entrypoint.sh"]

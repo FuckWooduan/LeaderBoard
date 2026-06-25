@@ -1,0 +1,108 @@
+# 单容器运行时：后端(Spring) + 前端(Next.js SSR) + sing-box + NapCat(QQ活动推送) 全在一个容器里。
+# - 宿主机 Redis（宝塔安装），network_mode host 直连 127.0.0.1:6379。
+# - 容器名固定 strikegod；镜像由 Dockerfile.runtime 构建（基于 NapCat 叠加 JRE/Node/sing-box + CJK 字体）。
+# - app.jar / web / 配置 由绑定挂载提供，改代码只需换 jar/web + restart，不必重建镜像。
+# - NapCat 反容器检测 + Xvfb 需要 privileged。QQ 仅用于「活动推送」，不收消息(不开 OneBot WS)。
+# 用法： docker compose -f deploy/docker-compose.runtime.yml up -d --build
+#
+# 编排项目名固定为 rank-harvester（否则默认取目录名 "deploy"）。
+name: rank-harvester
+
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.runtime
+    image: strikegod-runtime:latest
+    container_name: strikegod
+    restart: unless-stopped
+    network_mode: host
+    privileged: true               # NapCat 反容器检测(挂载绑定/proc) + Xvfb 需要
+    working_dir: /app
+    # ── 资源上限：宿主 8 核 / 30GiB；单容器多进程(QQ+JVM+Node+sing-box)，给足余量 ────
+    deploy:
+      resources:
+        limits:
+          cpus: "6"
+          memory: 8G
+    logging:
+      driver: json-file
+      options:
+        max-size: "30m"
+        max-file: "3"
+    environment:
+      # JVM 固定堆上限（单容器与 Node 共享内存，不再用 MaxRAMPercentage 以免抢占）。
+      # ExplicitGCInvokesConcurrent 让 FFDEC 渲染收尾的 System.gc() 走 G1 并发回收，不长时间 STW。
+      # （不封顶 Metaspace/DirectMemory：本应用类多、Netty/HttpClient 用直接内存，设小反而会触发新的 OOM。）
+      JAVA_OPTS: "${JAVA_OPTS:--Xmx2g -XX:+ExplicitGCInvokesConcurrent}"
+      # glibc malloc arena 上限：本机 8 核，默认最多 8×8=64 个 arena（可达 ~4G 驻留），是 Java RSS
+      # 远超 -Xmx 被 cgroup OOM 杀的根因（实测 RSS 5.8G/6G）。限到 2 个 arena + 尽早把空闲堆归还 OS。
+      MALLOC_ARENA_MAX: "${MALLOC_ARENA_MAX:-2}"
+      MALLOC_TRIM_THRESHOLD_: "${MALLOC_TRIM_THRESHOLD_:-131072}"
+      SERVER_ADDRESS: "127.0.0.1"
+      NODE_ENV: "production"
+      # 前端 SSR（同容器，super-entrypoint 透传给 node）
+      WEB_PORT: "3100"
+      API_BASE: "http://127.0.0.1:8080"
+      # MCP server(/mcp)程序化查玩家走公开 API Key 通道(/api/key/*)用的 key；留空则 MCP 玩家查询工具不可用，其余只读工具仍可用。
+      MCP_API_KEY: "${RANKHARVESTER_MCP_APIKEY:-}"
+      # ── NapCat（QQ 活动推送；仅 HTTP 发消息，不开 WS 收消息=不具备@聊天）───────────
+      MODE: "strikegod"            # 套用内置 onebot 模板：HTTP 服务端 3010（见 napcat-onebot11.json）
+      WEBUI_TOKEN: "${NAPCAT_WEBUI_TOKEN:-CHANGE_ME}"   # WebUI(6099) 登录令牌（super-entrypoint 每次启动固定为此值，方便扫码登录）
+      ACCOUNT: "${NAPCAT_ACCOUNT:-}"              # 机器人 QQ 号：填了则重启/掉线后自动快速登录，无需重扫码
+      NAPCAT_UID: "0"
+      NAPCAT_GID: "0"
+      NAPCAT_HTTP: "${NAPCAT_HTTP:-http://127.0.0.1:3010}"  # 推送客户端连 NapCat HTTP 接口发消息
+      NAPCAT_TOKEN: "${NAPCAT_TOKEN:-}"                      # 与 napcat-onebot11.json 的 HTTP token 一致；本机回环留空
+      # 本机 Java→Next 活动推送鉴权令牌（Spring 与 /qqbot/push 同值；为空则只发邮件不推 QQ）
+      QQBOT_PUSH_TOKEN: "${QQBOT_PUSH_TOKEN:-}"
+      RANKHARVESTER_QQBOT_PUSHTOKEN: "${QQBOT_PUSH_TOKEN:-}"
+      # 主人 QQ：仅此号私聊发 /status 机器人才回状态（其余消息一律不回）。默认沿用旧主人号。
+      QQBOT_OWNER_QQ: "${QQBOT_OWNER_QQ:-}"
+      # ── 宿主 Redis（口令机密，.env 提供）──────────────────────────────────────
+      SPRING_DATA_REDIS_HOST: "127.0.0.1"
+      SPRING_DATA_REDIS_PORT: "6379"
+      SPRING_DATA_REDIS_PASSWORD: "${SPRING_DATA_REDIS_PASSWORD:-}"
+      # 活动通知：抓游戏活动 → 新活动合并成邮件发给订阅者
+      RANKHARVESTER_ACTIVITY_BROADCASTENABLED: "${RANKHARVESTER_ACTIVITY_ENABLED:-false}"
+      RANKHARVESTER_ACTIVITY_BROADCASTINTERVALMS: "${RANKHARVESTER_ACTIVITY_BROADCAST_INTERVAL_MS:-60000}"
+      SPRING_TASK_SCHEDULING_POOL_SIZE: "${SPRING_TASK_SCHEDULING_POOL_SIZE:-4}"
+      RANKHARVESTER_ADMIN_TOTPSECRET: "${RANKHARVESTER_ADMIN_TOTPSECRET:-}"
+      RANKHARVESTER_GAME_DRYRUN: "${RANKHARVESTER_GAME_DRYRUN:-true}"
+      RANKHARVESTER_ACCOUNTS_SEEDSQL: "${RANKHARVESTER_ACCOUNTS_SEEDSQL:-}"
+      # 出站 SOCKS5 代理（游戏 TCP 走本地 sing-box）
+      RANKHARVESTER_GAME_PROXYENABLED: "${RANKHARVESTER_GAME_PROXYENABLED:-false}"
+      RANKHARVESTER_GAME_PROXYSOCKSHOST: "${RANKHARVESTER_GAME_PROXYSOCKSHOST:-}"
+      RANKHARVESTER_GAME_PROXYSOCKSPORT: "${RANKHARVESTER_GAME_PROXYSOCKSPORT:-2333}"
+      RANKHARVESTER_GAME_PROXYSOCKSPORTCOUNT: "${RANKHARVESTER_GAME_PROXYSOCKSPORTCOUNT:-8}"
+      # sing-box 配置托管：后台增删 trojan 节点 → 后端按 DB 重生成 config.json + pkill 重载。
+      RANKHARVESTER_SINGBOX_MANAGEENABLED: "${RANKHARVESTER_SINGBOX_MANAGEENABLED:-true}"
+      RANKHARVESTER_SINGBOX_CONFIGPATH: "${RANKHARVESTER_SINGBOX_CONFIGPATH:-/etc/sing-box/config.json}"
+      RANKHARVESTER_FETCH_ACCOUNTCONCURRENCY: "${RANKHARVESTER_FETCH_ACCOUNTCONCURRENCY:-6}"
+      # 抓榜出口：熊猫动态住宅 SOCKS5（机密，.env 提供）
+      RANKHARVESTER_GAME_PANDAENABLED: "${RANKHARVESTER_GAME_PANDAENABLED:-false}"
+      RANKHARVESTER_GAME_PANDAAPIURL: "${RANKHARVESTER_GAME_PANDAAPIURL:-}"
+      RANKHARVESTER_GAME_PANDAPULLCOUNT: "${RANKHARVESTER_GAME_PANDAPULLCOUNT:-5}"
+      RANKHARVESTER_GAME_PANDAPOOLSIZE: "${RANKHARVESTER_GAME_PANDAPOOLSIZE:-15}"
+      RANKHARVESTER_GAME_PANDADAILYBUDGET: "${RANKHARVESTER_GAME_PANDADAILYBUDGET:-9000}"
+      # 人机验证 Cloudflare Turnstile（机密，.env 提供）
+      RANKHARVESTER_TURNSTILE_ENABLED: "${RANKHARVESTER_TURNSTILE_ENABLED:-true}"
+      RANKHARVESTER_TURNSTILE_SITEKEY: "${RANKHARVESTER_TURNSTILE_SITEKEY:-}"
+      RANKHARVESTER_TURNSTILE_SECRETKEY: "${RANKHARVESTER_TURNSTILE_SECRETKEY:-}"
+      # 人机验证 极验 GeeTest v4（captcha-key 机密，.env 提供；captchaId 公开有内置默认）
+      RANKHARVESTER_GEETEST_ENABLED: "${RANKHARVESTER_GEETEST_ENABLED:-true}"
+      RANKHARVESTER_GEETEST_CAPTCHAID: "${RANKHARVESTER_GEETEST_CAPTCHAID:-}"
+      RANKHARVESTER_GEETEST_CAPTCHAKEY: "${RANKHARVESTER_GEETEST_CAPTCHAKEY:-}"
+      # 邮件 SMTP 密码（机密，.env 提供）
+      RANKHARVESTER_MAIL_PASSWORD: "${RANKHARVESTER_MAIL_PASSWORD:-}"
+      # 全站 AI 统一走 application.yml 内置 Gemini 网关默认，不再 .env 注入。
+    volumes:
+      - /www/wwwroot/rank-harvester/app.jar:/app/app.jar:ro
+      - /www/wwwroot/rank-harvester/web:/app/web:ro
+      - /www/wwwroot/rank-harvester/data:/app/data
+      - /www/wwwroot/rank-harvester/config:/app/config:ro
+      # 可写：后端按后台 trojan 节点重生成此文件再 pkill 重载 sing-box（不能用 :ro）。
+      - /www/wwwroot/rank-harvester/singbox/config.json:/etc/sing-box/config.json
+      # NapCat 登录态 + OneBot 配置持久化（重启快速登录、不丢配置，无需重扫码）
+      - /www/wwwroot/rank-harvester/napcat/QQ:/app/.config/QQ
+      - /www/wwwroot/rank-harvester/napcat/config:/app/napcat/config

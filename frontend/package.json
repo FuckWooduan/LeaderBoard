@@ -1,0 +1,29 @@
+{
+  "name": "strikegod-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 3000",
+    "prebuild": "rm -rf public/ruffle && mkdir -p public/ruffle/20260611 public/ruffle/fonts && cp node_modules/@ruffle-rs/ruffle/*.js node_modules/@ruffle-rs/ruffle/*.wasm public/ruffle/20260611/ && cp public/fonts/*.otf public/ruffle/fonts/ && rm -rf public/swagger && mkdir -p public/swagger && cp node_modules/swagger-ui-dist/swagger-ui-bundle.js node_modules/swagger-ui-dist/swagger-ui-standalone-preset.js node_modules/swagger-ui-dist/swagger-ui.css public/swagger/",
+    "build": "next build",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@ruffle-rs/ruffle": "^0.3.0-nightly.2026.6.10",
+    "ioredis": "^5.11.1",
+    "next": "^15.3.3",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "swagger-ui-dist": "^5.32.6"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.1.8",
+    "@types/node": "^22.15.0",
+    "@types/react": "^19.1.6",
+    "@types/react-dom": "^19.1.6",
+    "tailwindcss": "^4.1.8",
+    "typescript": "^5.8.3"
+  }
+}

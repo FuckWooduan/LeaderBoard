@@ -1,0 +1,11 @@
+User-agent: *
+Allow: /
+# 后台管理页（无 SEO 价值、且含管理入口）
+Disallow: /admin
+# JSON 数据接口（节省抓取预算、避免索引接口）
+Disallow: /api/
+# 登录/注册页无索引价值
+Disallow: /login
+Disallow: /register
+
+Sitemap: https://example.com/sitemap.xml
